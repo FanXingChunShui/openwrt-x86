@@ -1,0 +1,113 @@
+name: Build OpenWrt x86
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            curl \
+            file \
+            g++ \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libssl-dev \
+            unzip \
+            python3 \
+            python3-pip \
+            python3-venv
+
+      - name: Clone OpenWrt 25.12 source
+        run: |
+          git clone --depth=1 --branch openwrt-25.12 https://github.com/openwrt/openwrt.git openwrt-src
+
+      - name: Update feeds
+        run: |
+          cd openwrt-src
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure for x86
+        run: |
+          cd openwrt-src
+          make menuconfig TARGET=x86 TARGET_SUBTYPE=64
+          # Set CONFIG_TARGET_x86_64=y
+          # Set CONFIG_TARGET_ROOTFS_EXT4FS=y
+          # Set CONFIG_TARGET_ROOTFS_SQUASHFS=y
+
+      - name: Add passwall2 plugin
+        run: |
+          cd openwrt-src
+          # Clone passwall2 from official repository
+          rm -rf package/feeds/passwall2
+          git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2.git package/feeds/passwall2
+          ./scripts/feeds install -a -p passwall2
+
+      - name: Add VPN and DDNS plugins
+        run: |
+          cd openwrt-src
+          # Install VPN plugins (openvpn, wireguard)
+          ./scripts/feeds install -a -p luci-app-openvpn
+          ./scripts/feeds install -a -p luci-proto-wireguard
+          # Install DDNS plugin
+          ./scripts/feeds install -a -p luci-app-ddns
+          ./scripts/feeds install -a -p ddns-scripts
+
+      - name: Configure memory settings (1024/4096)
+        run: |
+          cd openwrt-src
+          # Set memory configuration
+          # BUILD_RAM=4096, SWAP=1024
+          export BUILD_RAM=4096
+          export SWAP=1024
+          # Configure kernel settings for limited memory builds
+          echo "CONFIG_KERNEL_SWAP=y" >> .config
+          echo "CONFIG_KERNEL_CCACHE=y" >> .config
+
+      - name: Configure management IP
+        run: |
+          cd openwrt-src
+          # Set default LAN IP to 192.168.10.251
+          sed -i "s/option ipaddr '192.168.1.1'/option ipaddr '192.168.10.251'/g" package/base-files/files/etc/config/network || true
+          sed -i "s/option gateway '192.168.1.1'/option gateway '192.168.10.1'/g" package/base-files/files/etc/config/network || true
+
+      - name: Build OpenWrt
+        env:
+          BUILD_RAM: 4096
+          SWAP: 1024
+          MAKE_JOBS: 2
+        run: |
+          cd openwrt-src
+          # Limit make jobs to prevent OOM with limited RAM
+          make -j$(nproc) V=s
+          # Or with limited memory: make -j2 V=s
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-x86-firmware
+          path: openwrt-src/bin/targets/x86/64/*.bin
+          retention-days: 7
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: openwrt-src/logs/
+          retention-days: 7
