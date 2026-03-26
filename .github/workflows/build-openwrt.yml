@@ -52,6 +52,9 @@ jobs:
           echo 'CONFIG_TARGET_ROOTFS_PARALLELSQUASHFS=y' >> .config
           echo 'CONFIG_GRUB_IMAGES=y' >> .config
           echo 'CONFIG_TARGET_IMAGES_GZIP=y' >> .config
+          # Disk partition size: 1024MB swap, 4096MB rootfs
+          echo 'CONFIG_TARGET_ROOTFS_PARTSIZE=4096' >> .config
+          echo 'CONFIG_TARGET_SWAP_PARTITIONSIZE=1024' >> .config
 
       - name: Add passwall2 plugin
         run: |
@@ -71,23 +74,42 @@ jobs:
           ./scripts/feeds install -a -p luci-app-ddns
           ./scripts/feeds install -a -p ddns-scripts
 
-      - name: Configure memory settings (1024/4096)
+      - name: Configure kernel memory (1024/4096)
         run: |
           cd openwrt-src
-          # Set memory configuration
-          # BUILD_RAM=4096, SWAP=1024
-          export BUILD_RAM=4096
-          export SWAP=1024
-          # Configure kernel settings for limited memory builds
-          echo "CONFIG_KERNEL_SWAP=y" >> .config
-          echo "CONFIG_KERNEL_CCACHE=y" >> .config
+          # Configure kernel memory settings for x86
+          # 1024MB base, 4096MB maximum memory configuration
+          echo 'CONFIG_HIGHMEM4G=y' >> .config
+          echo 'CONFIG_HIGHMEM64G=n' >> .config
+          echo 'CONFIG_X86_5LEVEL=y' >> .config
+          echo 'CONFIG_NR_CPUS=8' >> .config
+          echo 'CONFIG_SMP=y' >> .config
+          echo 'CONFIG_HZ_1000=y' >> .config
+          echo 'CONFIG_HZ=1000' >> .config
+          echo 'CONFIG_CCACHE=y' >> .config
+          echo 'CONFIG_KERNEL_CCACHE=y' >> .config
 
       - name: Configure management IP
         run: |
           cd openwrt-src
+          # Create base-files directory structure if not exists
+          mkdir -p package/base-files/files/etc/config
           # Set default LAN IP to 192.168.10.251
-          sed -i "s/option ipaddr '192.168.1.1'/option ipaddr '192.168.10.251'/g" package/base-files/files/etc/config/network || true
-          sed -i "s/option gateway '192.168.1.1'/option gateway '192.168.10.1'/g" package/base-files/files/etc/config/network || true
+          cat > package/base-files/files/etc/config/network << 'EOF'
+config interface 'loopback'
+        option device 'lo'
+        option proto 'static'
+        option ipaddr '127.0.0.1'
+        option netmask '255.0.0.0'
+
+config interface 'lan'
+        option device 'eth0'
+        option proto 'static'
+        option ipaddr '192.168.10.251'
+        option netmask '255.255.255.0'
+        option gateway '192.168.10.1'
+        option ip6assign '60'
+EOF
 
       - name: Build OpenWrt
         env:
