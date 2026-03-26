@@ -45,10 +45,17 @@ jobs:
       - name: Configure for x86
         run: |
           cd openwrt-src
-          make menuconfig TARGET=x86 TARGET_SUBTYPE=64
-          # Set CONFIG_TARGET_x86_64=y
-          # Set CONFIG_TARGET_ROOTFS_EXT4FS=y
-          # Set CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          # Configure x86_64 target using defconfig as base
+          make defconfig
+          # Add x86_64 target and required options
+          cat >> .config << EOF
+CONFIG_TARGET_x86_64=y
+CONFIG_TARGET_ROOTFS_EXT4FS=y
+CONFIG_TARGET_ROOTFS_SQUASHFS=y
+CONFIG_TARGET_ROOTFS_PARALLELSQUASHFS=y
+CONFIG_GRUB_IMAGES=y
+CONFIG_TARGET_IMAGES_GZIP=y
+EOF
 
       - name: Add passwall2 plugin
         run: |
