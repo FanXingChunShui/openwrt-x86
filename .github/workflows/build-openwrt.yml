@@ -92,24 +92,8 @@ jobs:
       - name: Configure management IP
         run: |
           cd openwrt-src
-          # Create base-files directory structure if not exists
           mkdir -p package/base-files/files/etc/config
-          # Set default LAN IP to 192.168.10.251
-          cat > package/base-files/files/etc/config/network << 'EOF'
-config interface 'loopback'
-        option device 'lo'
-        option proto 'static'
-        option ipaddr '127.0.0.1'
-        option netmask '255.0.0.0'
-
-config interface 'lan'
-        option device 'eth0'
-        option proto 'static'
-        option ipaddr '192.168.10.251'
-        option netmask '255.255.255.0'
-        option gateway '192.168.10.1'
-        option ip6assign '60'
-EOF
+          printf "config interface 'loopback'\n\toption device 'lo'\n\toption proto 'static'\n\toption ipaddr '127.0.0.1'\n\toption netmask '255.0.0.0'\n\nconfig interface 'lan'\n\toption device 'eth0'\n\toption proto 'static'\n\toption ipaddr '192.168.10.251'\n\toption netmask '255.255.255.0'\n\toption gateway '192.168.10.1'\n\toption ip6assign '60'\n" > package/base-files/files/etc/config/network
 
       - name: Build OpenWrt
         env:
