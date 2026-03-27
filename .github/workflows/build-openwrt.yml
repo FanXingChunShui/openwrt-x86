@@ -1,128 +1,322 @@
+---
+# Build OpenWrt x86 firmware with optimizations
+# Triggers: push to main, pull requests, manual dispatch, weekly schedule
+
 name: Build OpenWrt x86
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly: Sunday 2 AM UTC
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      BUILD_DIR: openwrt-src
+      BUILD_RAM: 4096
+      SWAP: 1024
+      MAKE_JOBS: 2
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
-      - name: Checkout
+      # ============================================================================
+      # PREPARATION PHASE
+      # ============================================================================
+
+      - id: checkout
+        name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - id: setup-cache
+        name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - id: install-deps
+        name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            git \
             curl \
+            ddns-scripts \
             file \
             g++ \
-            zlib1g-dev \
+            git \
             libncurses5-dev \
             libncursesw5-dev \
             libssl-dev \
-            unzip \
             python3 \
             python3-pip \
-            python3-venv
+            python3-venv \
+            unzip \
+            zlib1g-dev
 
-      - name: Clone OpenWrt 25.12 source
-        run: |
-          git clone --depth=1 --branch openwrt-25.12 https://github.com/openwrt/openwrt.git openwrt-src
+      # ============================================================================
+      # SOURCE & FEEDS PHASE
+      # ============================================================================
 
-      - name: Update feeds
+      - id: clone-source
+        name: Clone OpenWrt 25.12 source
         run: |
-          cd openwrt-src
-          ./scripts/feeds update -a
+          if [ -d "$BUILD_DIR" ]; then
+            echo "✓ Updating existing source..."
+            cd "$BUILD_DIR"
+            git fetch origin
+            git reset --hard origin/openwrt-25.12
+          else
+            echo "✓ Cloning fresh source..."
+            git clone \
+              --depth=1 \
+              --branch openwrt-25.12 \
+              https://github.com/openwrt/openwrt.git \
+              "$BUILD_DIR"
+          fi
+
+      - id: cache-builds
+        name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.BUILD_DIR }}/staging_dir
+            ${{ env.BUILD_DIR }}/build_dir/toolchain*
+          key: buildcache-${{ runner.os }}-${{ hashFiles('**/.config') }}
+          restore-keys: |
+            buildcache-${{ runner.os }}-
+
+      - id: update-feeds
+        name: Update and install feeds
+        run: |
+          cd "$BUILD_DIR"
+          echo "✓ Updating feeds..."
+          timeout 300 ./scripts/feeds update -a || true
+          echo "✓ Installing feeds..."
           ./scripts/feeds install -a
 
-      - name: Configure for x86
+      # ============================================================================
+      # CONFIGURATION PHASE
+      # ============================================================================
+
+      - id: configure-x86
+        name: Configure x86_64 build
         run: |
-          cd openwrt-src
+          cd "$BUILD_DIR"
+          echo "✓ Generating base configuration..."
           make defconfig
-          echo 'CONFIG_TARGET_x86_64=y' >> .config
-          echo 'CONFIG_TARGET_ROOTFS_EXT4FS=y' >> .config
-          echo 'CONFIG_TARGET_ROOTFS_SQUASHFS=y' >> .config
-          echo 'CONFIG_TARGET_ROOTFS_PARALLELSQUASHFS=y' >> .config
-          echo 'CONFIG_GRUB_IMAGES=y' >> .config
-          echo 'CONFIG_TARGET_IMAGES_GZIP=y' >> .config
-          # Disk partition size: 1024MB swap, 4096MB rootfs
-          echo 'CONFIG_TARGET_ROOTFS_PARTSIZE=4096' >> .config
-          echo 'CONFIG_TARGET_SWAP_PARTITIONSIZE=1024' >> .config
 
-      - name: Add passwall2 plugin
-        run: |
-          cd openwrt-src
-          # Clone passwall2 from official repository
-          rm -rf package/feeds/passwall2
-          git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2.git package/feeds/passwall2
-          ./scripts/feeds install -a -p passwall2
+          echo "✓ Applying x86_64 specific settings..."
+          cat >> .config << 'EOF'
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_ROOTFS_EXT4FS=y
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          CONFIG_TARGET_ROOTFS_PARALLELSQUASHFS=y
+          CONFIG_GRUB_IMAGES=y
+          CONFIG_TARGET_IMAGES_GZIP=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=4096
+          CONFIG_TARGET_SWAP_PARTITIONSIZE=1024
+          CONFIG_HIGHMEM4G=y
+          CONFIG_HIGHMEM64G=n
+          CONFIG_X86_5LEVEL=y
+          CONFIG_NR_CPUS=8
+          CONFIG_SMP=y
+          CONFIG_HZ_1000=y
+          CONFIG_HZ=1000
+          CONFIG_CCACHE=y
+          CONFIG_KERNEL_CCACHE=y
+          EOF
 
-      - name: Add VPN and DDNS plugins
-        run: |
-          cd openwrt-src
-          # Install VPN plugins (openvpn, wireguard)
-          ./scripts/feeds install -a -p luci-app-openvpn
-          ./scripts/feeds install -a -p luci-proto-wireguard
-          # Install DDNS plugin
-          ./scripts/feeds install -a -p luci-app-ddns
-          ./scripts/feeds install -a -p ddns-scripts
+          echo "✓ Finalizing configuration..."
+          make defconfig
 
-      - name: Configure kernel memory (1024/4096)
+      - id: add-plugins
+        name: Add optional plugins
+        continue-on-error: true
         run: |
-          cd openwrt-src
-          # Configure kernel memory settings for x86
-          # 1024MB base, 4096MB maximum memory configuration
-          echo 'CONFIG_HIGHMEM4G=y' >> .config
-          echo 'CONFIG_HIGHMEM64G=n' >> .config
-          echo 'CONFIG_X86_5LEVEL=y' >> .config
-          echo 'CONFIG_NR_CPUS=8' >> .config
-          echo 'CONFIG_SMP=y' >> .config
-          echo 'CONFIG_HZ_1000=y' >> .config
-          echo 'CONFIG_HZ=1000' >> .config
-          echo 'CONFIG_CCACHE=y' >> .config
-          echo 'CONFIG_KERNEL_CCACHE=y' >> .config
+          cd "$BUILD_DIR"
 
-      - name: Configure management IP
+          echo "◆ Installing Passwall2..."
+          rm -rf package/feeds/passwall2 2>/dev/null || true
+          git clone \
+            --depth=1 \
+            https://github.com/Openwrt-Passwall/openwrt-passwall2.git \
+            package/feeds/passwall2
+          ./scripts/feeds install -a -p passwall2 || true
+
+          echo "◆ Installing VPN & DDNS packages..."
+          ./scripts/feeds install -a -p luci-app-openvpn || true
+          ./scripts/feeds install -a -p luci-proto-wireguard || true
+          ./scripts/feeds install -a -p luci-app-ddns || true
+          ./scripts/feeds install -a -p ddns-scripts || true
+
+      - id: config-network
+        name: Configure network interfaces
         run: |
-          cd openwrt-src
+          cd "$BUILD_DIR"
           mkdir -p package/base-files/files/etc/config
-          printf "config interface 'loopback'\n\toption device 'lo'\n\toption proto 'static'\n\toption ipaddr '127.0.0.1'\n\toption netmask '255.0.0.0'\n\nconfig interface 'lan'\n\toption device 'eth0'\n\toption proto 'static'\n\toption ipaddr '192.168.10.251'\n\toption netmask '255.255.255.0'\n\toption gateway '192.168.10.1'\n\toption ip6assign '60'\n\nconfig interface 'wg0'\n\toption proto 'wireguard'\n\toption private_key 'your_private_key_here'\n\tlist addresses '10.0.0.2/24'\n\nconfig wireguard_wg0\n\toption public_key 'your_public_key_here'\n\toption endpoint_host 'your_endpoint_host'\n\toption endpoint_port '51820'\n\toption route_allowed_ips '1'\n\tlist allowed_ips '0.0.0.0/0'\n" > package/base-files/files/etc/config/network
 
-      - name: Configure firewall for VPN
+          echo "✓ Creating network configuration..."
+          cat > package/base-files/files/etc/config/network << 'NETCFG'
+          config interface 'loopback'
+          	option device 'lo'
+          	option proto 'static'
+          	option ipaddr '127.0.0.1'
+          	option netmask '255.0.0.0'
+
+          config interface 'lan'
+          	option device 'eth0'
+          	option proto 'static'
+          	option ipaddr '192.168.10.251'
+          	option netmask '255.255.255.0'
+          	option gateway '192.168.10.1'
+          	option ip6assign '60'
+          NETCFG
+
+      - id: config-firewall
+        name: Create firewall UCI script
         run: |
-          cd openwrt-src
-          mkdir -p package/base-files/files/etc/config
-          printf "config zone\n\toption name 'lan'\n\tlist network 'lan'\n\toption input 'ACCEPT'\n\toption output 'ACCEPT'\n\toption forward 'ACCEPT'\n\nconfig zone\n\toption name 'wan'\n\tlist network 'wan'\n\toption input 'REJECT'\n\toption output 'ACCEPT'\n\toption forward 'REJECT'\n\toption masq '1'\n\toption mtu_fix '1'\n\nconfig zone\n\toption name 'vpn'\n\tlist network 'wg0'\n\toption input 'ACCEPT'\n\toption output 'ACCEPT'\n\toption forward 'ACCEPT'\n\toption masq '1'\n\nconfig forwarding\n\toption src 'lan'\n\tdest 'wan'\n\nconfig forwarding\n\toption src 'lan'\n\tdest 'vpn'\n\nconfig rule\n\toption name 'Allow-OpenVPN'\n\toption src 'wan'\n\toption dest_port '1194'\n\toption proto 'udp'\n\toption target 'ACCEPT'\n\nconfig rule\n\toption name 'Allow-WireGuard'\n\toption src 'wan'\n\toption dest_port '51820'\n\toption proto 'udp'\n\toption target 'ACCEPT'\n" > package/base-files/files/etc/config/firewall
+          cd "$BUILD_DIR"
+          mkdir -p package/base-files/files/etc/uci-defaults
 
-      - name: Build OpenWrt
-        env:
-          BUILD_RAM: 4096
-          SWAP: 1024
-          MAKE_JOBS: 2
+          echo "✓ Creating firewall configuration script..."
+          cat > package/base-files/files/etc/uci-defaults/99-firewall-config << 'FWSCRIPT'
+          #!/bin/sh
+          uci -q batch << 'EOC'
+          set firewall.@zone[0]='zone'
+          set firewall.@zone[0].name='lan'
+          add_list firewall.@zone[0].network='lan'
+          set firewall.@zone[0].input='ACCEPT'
+          set firewall.@zone[0].output='ACCEPT'
+          set firewall.@zone[0].forward='ACCEPT'
+
+          add firewall zone
+          set firewall.@zone[1]='zone'
+          set firewall.@zone[1].name='wan'
+          add_list firewall.@zone[1].network='wan'
+          set firewall.@zone[1].input='REJECT'
+          set firewall.@zone[1].output='ACCEPT'
+          set firewall.@zone[1].forward='REJECT'
+          set firewall.@zone[1].masq='1'
+          set firewall.@zone[1].mtu_fix='1'
+
+          add firewall forwarding
+          set firewall.@forwarding[0]='forwarding'
+          set firewall.@forwarding[0].src='lan'
+          set firewall.@forwarding[0].dest='wan'
+
+          add firewall rule
+          set firewall.@rule[0]='rule'
+          set firewall.@rule[0].name='Allow-OpenVPN'
+          set firewall.@rule[0].src='wan'
+          set firewall.@rule[0].dest_port='1194'
+          set firewall.@rule[0].proto='udp'
+          set firewall.@rule[0].target='ACCEPT'
+
+          add firewall rule
+          set firewall.@rule[1]='rule'
+          set firewall.@rule[1].name='Allow-WireGuard'
+          set firewall.@rule[1].src='wan'
+          set firewall.@rule[1].dest_port='51820'
+          set firewall.@rule[1].proto='udp'
+          set firewall.@rule[1].target='ACCEPT'
+
+          commit firewall
+          EOC
+          exit 0
+          FWSCRIPT
+
+          chmod +x package/base-files/files/etc/uci-defaults/99-firewall-config
+
+      # ============================================================================
+      # BUILD PHASE
+      # ============================================================================
+
+      - id: build
+        name: Build firmware
         run: |
-          cd openwrt-src
-          # Limit make jobs to prevent OOM with limited RAM
-          make -j$(nproc) V=s
-          # Or with limited memory: make -j2 V=s
+          cd "$BUILD_DIR"
+          echo "Starting build with $MAKE_JOBS parallel job(s)..."
+          make -j$MAKE_JOBS V=s 2>&1 | tee build.log
 
-      - name: Upload artifacts
+          if [ ! -d "bin/targets/x86/64" ]; then
+            echo "❌ Error: Build output directory not found!"
+            exit 1
+          fi
+          echo "✓ Build completed successfully"
+
+      # ============================================================================
+      # POST-BUILD PHASE
+      # ============================================================================
+
+      - id: summary
+        name: Generate build summary
+        if: always()
+        run: |
+          cd "$BUILD_DIR"
+
+          {
+            echo "=== OpenWrt x86 Build Summary ==="
+            echo "Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "GitHub Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo "Build Status: $([ -f bin/targets/x86/64/*.bin ] && echo '✓ SUCCESS' || echo '✗ FAILED')"
+            echo ""
+
+            if [ -d "bin/targets/x86/64" ]; then
+              echo "Output Firmware:"
+              ls -lh bin/targets/x86/64/ | tail -n +2 | awk '{print "  " $9 " (" $5 ")"}'
+            fi
+            echo ""
+          } | tee build-summary.txt
+
+      - id: upload-firmware
+        name: Upload firmware artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-x86-firmware
-          path: openwrt-src/bin/targets/x86/64/*.bin
-          retention-days: 7
+          path: ${{ env.BUILD_DIR }}/bin/targets/x86/64/
+          retention-days: 30
+          if-no-files-found: warn
 
-      - name: Upload build logs
-        if: failure()
+      - id: upload-logs
+        name: Upload build logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
-          path: openwrt-src/logs/
-          retention-days: 7
+          name: build-logs-${{ github.run_number }}
+          path: |
+            ${{ env.BUILD_DIR }}/build.log
+            ${{ env.BUILD_DIR }}/build-summary.txt
+            ${{ env.BUILD_DIR }}/logs/
+          retention-days: 15
+          if-no-files-found: ignore
+
+      - id: release
+        name: Create GitHub Release
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: build-${{ github.run_number }}
+          name: OpenWrt x86 Build #${{ github.run_number }}
+          bodyFile: ${{ env.BUILD_DIR }}/build-summary.txt
+          draft: false
+          prerelease: false
+          artifacts: ${{ env.BUILD_DIR }}/bin/targets/x86/64/*
+          token: ${{ secrets.GITHUB_TOKEN }}
