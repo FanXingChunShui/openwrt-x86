@@ -56,7 +56,6 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             curl \
-            ddns-scripts \
             file \
             g++ \
             git \
