@@ -169,6 +169,16 @@ jobs:
           ./scripts/feeds install -a -p luci-app-ddns || true
           ./scripts/feeds install -a -p ddns-scripts || true
 
+      - id: config-plugins
+        name: Configure plugins in .config
+        run: |
+          cd "$BUILD_DIR"
+          echo "◆ Adding Passwall2 packages to .config..."
+          cat >> .config << 'EOF'
+          CONFIG_PACKAGE_luci-app-passwall2=y
+          CONFIG_PACKAGE_passwall2=y
+          EOF
+
       - id: config-network
         name: Configure network interfaces
         run: |
