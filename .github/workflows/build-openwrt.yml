@@ -24,6 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
+    permissions:
+      contents: write
+      packages: write
+
     env:
       BUILD_DIR: openwrt-src
       BUILD_RAM: 4096
