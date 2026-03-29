@@ -36,7 +36,7 @@ jobs:
       CARGO_HOME: /home/runner/.cargo
       RUSTUP_HOME: /home/runner/.rustup
       RUSTUP_TOOLCHAIN: stable
-      PATH: /home/runner/.cargo/bin:$PATH
+      PATH: /home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
     steps:
       # ============================================================================
@@ -46,32 +46,12 @@ jobs:
       - id: install-deps
         name: Install build dependencies
         run: |
-          echo "=== Debug: checking environment ==="
           echo "PATH=$PATH"
-          echo "whoami = $(whoami)"
-          echo "id = $(id)"
-
-          # Try apt-get with sudo
-          if /usr/bin/apt-get --version &>/dev/null; then
-            echo "Using apt-get with sudo"
-            sudo /usr/bin/apt-get update
-            sudo /usr/bin/apt-get install -y \
-              build-essential curl file g++ git libncurses5-dev \
-              libncursesw5-dev libssl-dev python3 python3-pip \
-              python3-venv tar unzip zlib1g-dev
-          # Try apt with sudo
-          elif /usr/bin/apt --version &>/dev/null; then
-            echo "Using apt with sudo"
-            sudo /usr/bin/apt update
-            sudo /usr/bin/apt install -y \
-              build-essential curl file g++ git libncurses5-dev \
-              libncursesw5-dev libssl-dev python3 python3-pip \
-              python3-venv tar unzip zlib1g-dev
-          else
-            echo "No apt found, listing available commands:"
-            ls -la /usr/bin/ | head -30
-            exit 1
-          fi
+          /usr/bin/apt-get update
+          /usr/bin/apt-get install -y \
+            build-essential curl file g++ git libncurses5-dev \
+            libncursesw5-dev libssl-dev python3 python3-pip \
+            python3-venv tar unzip zlib1g-dev
 
           # Install Rust pre-built toolchain for x86_64
           export CARGO_HOME="$HOME/.cargo"
