@@ -49,8 +49,18 @@ jobs:
       - id: install-deps
         name: Install build dependencies
         run: |
-          apt-get update
-          apt-get install -y \
+          # Detect available package manager
+          if command -v apt-get &>/dev/null; then
+            PKG_MGR="apt-get"
+          elif command -v apt &>/dev/null; then
+            PKG_MGR="apt"
+          else
+            echo "No apt package manager found"
+            exit 1
+          fi
+
+          $PKG_MGR update
+          $PKG_MGR install -y \
             build-essential \
             curl \
             file \
