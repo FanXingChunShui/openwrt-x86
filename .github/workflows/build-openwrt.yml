@@ -34,6 +34,12 @@ jobs:
       SWAP: 1024
       MAKE_JOBS: 2
       DEBIAN_FRONTEND: noninteractive
+      # Prevent rust from downloading pre-built LLVM
+      RUSTC_LLVM_DOWNLOAD: if-unchanged
+      CARGO_HOME: /home/runner/.cargo
+      RUSTUP_HOME: /home/runner/.rustup
+      RUSTUP_TOOLCHAIN: stable
+      PATH: /home/runner/.cargo/bin:$PATH
 
     steps:
       # ============================================================================
@@ -71,6 +77,12 @@ jobs:
             python3-venv \
             unzip \
             zlib1g-dev
+
+          # Install Rust pre-built toolchain for x86_64
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "PATH=$HOME/.cargo/bin:$PATH" >> $GITHUB_ENV
+          echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
+          echo "RUSTUP_HOME=$HOME/.rustup" >> $GITHUB_ENV
 
       # ============================================================================
       # SOURCE & FEEDS PHASE
@@ -259,8 +271,11 @@ jobs:
 
       - id: build
         name: Build firmware
+        env:
+          RUSTC_LLVM_DOWNLOAD: if-unchanged
         run: |
           cd "$BUILD_DIR"
+          export RUSTC_LLVM_DOWNLOAD=if-unchanged
           echo "Starting build with $MAKE_JOBS parallel job(s)..."
           make -j$MAKE_JOBS V=s 2>&1 | tee build.log
           BUILD_EXIT_CODE=${PIPESTATUS[0]}
