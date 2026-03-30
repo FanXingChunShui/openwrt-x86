@@ -10,7 +10,7 @@ on:
       make_kernel_config:
         description: 'Run make kernel_config'
         required: false
-        default: 'false'
+        default: false
         type: boolean
   schedule:
     - cron: '0 2 * * 0'
