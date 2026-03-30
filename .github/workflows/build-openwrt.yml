@@ -116,6 +116,28 @@ jobs:
           echo "✓ Installing feeds..."
           ./scripts/feeds install -a
 
+      - id: patch-rust
+        name: Patch Rust package for CI compatibility
+        run: |
+          cd "$BUILD_DIR"
+          echo "✓ Patching Rust package to fix llvm.download-ci-llvm..."
+          # Find and patch the bootstrap config patch file
+          RUST_PATCH_DIR="feeds/packages/lang/rust/patches"
+          if [ -d "$RUST_PATCH_DIR" ]; then
+            # Look for patch files that contain llvm.download-ci-llvm
+            PATCH_FILE=$(grep -l "llvm.download-ci-llvm" "$RUST_PATCH_DIR"/*.patch 2>/dev/null | head -1)
+            if [ -n "$PATCH_FILE" ]; then
+              echo "Found patch file: $PATCH_FILE"
+              # Replace 'llvm.download-ci-llvm = true' with 'llvm.download-ci-llvm = "if-unchanged"'
+              sed -i 's/llvm\.download-ci-llvm = true/llvm.download-ci-llvm = "if-unchanged"/g' "$PATCH_FILE"
+              echo "✓ Patched llvm.download-ci-llvm in $PATCH_FILE"
+            else
+              echo "No patch file found containing llvm.download-ci-llvm"
+            fi
+          else
+            echo "Rust patches directory not found"
+          fi
+
       # ============================================================================
       # CONFIGURATION PHASE
       # ============================================================================
