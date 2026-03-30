@@ -55,10 +55,6 @@ jobs:
         run: |
           git clone --depth=1 --branch=${{ env.OPENWRT_VERSION }} ${{ env.OPENWRT_REPO }} openwrt
 
-      - name: Copy preconfig
-        run: |
-          cp configs/x86-legacy.config openwrt/.config
-
       - name: Update feeds
         run: |
           cd openwrt
@@ -71,35 +67,49 @@ jobs:
           ./scripts/feeds update helloworld
           ./scripts/feeds install -a -p helloworld
 
-      - name: Configure build
+      - name: Configure build with default x86_64
         run: |
           cd openwrt
           make defconfig
+
+      - name: Enable required packages
+        run: |
+          cd openwrt
+          ./scripts/config/conf --enable PACKAGE_luci
+          ./scripts/config/conf --enable PACKAGE_luci-compat
+          ./scripts/config/conf --enable PACKAGE_luci-theme-bootstrap
+          ./scripts/config/conf --enable PACKAGE_luci-app-firewall
+          ./scripts/config/conf --enable PACKAGE_luci-app-qos
+          ./scripts/config/conf --enable PACKAGE_qos-scripts
+          ./scripts/config/conf --enable PACKAGE_luci-app-vpn
+          ./scripts/config/conf --enable PACKAGE_openvpn
+          ./scripts/config/conf --enable PACKAGE_luci-app-passwall
+          ./scripts/config/conf --enable PACKAGE_luci-app-ssr-plus
 
       - name: Create custom files for network config
         run: |
           mkdir -p openwrt/files/etc/config
           cat > openwrt/files/etc/config/network << 'EOF'
-          config interface 'loopback'
-            option device 'lo'
-            option proto 'static'
-            option ipaddr '127.0.0.1'
-            option netmask '255.0.0.0'
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
 
-          config device
-            option name 'br-lan'
-            option type 'bridge'
-            list ports 'eth0'
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'eth0'
 
-          config interface 'lan'
-            option device 'br-lan'
-            option proto 'static'
-            option ipaddr '192.168.10.251'
-            option netmask '255.255.255.0'
-            option gateway '192.168.10.1'
-            list dns '8.8.8.8'
-            list dns '114.114.114.114'
-          EOF
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.10.251'
+	option netmask '255.255.255.0'
+	option gateway '192.168.10.1'
+	list dns '8.8.8.8'
+	list dns '114.114.114.114'
+EOF
 
       - name: Build firmware
         run: |
