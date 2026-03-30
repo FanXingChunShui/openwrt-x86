@@ -1,431 +1,122 @@
----
-# Build OpenWrt x86 firmware with optimizations
-# Triggers: push to main, pull requests, manual dispatch, weekly schedule
-
-name: Build OpenWrt x86
+name: Build OpenWrt x86/64 Firmware
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      make_kernel_config:
+        description: 'Run make kernel_config'
+        required: false
+        default: 'false'
+        type: boolean
   schedule:
-    - cron: '0 2 * * 0'  # Weekly: Sunday 2 AM UTC
+    - cron: '0 2 * * 0'
 
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  OPENWRT_VERSION: '25.12'
+  OPENWRT_REPO: 'https://github.com/openwrt/openwrt.git'
+  TARGET_ARCH: 'x86_64'
+  MAKE_JOBS: '$(nproc)'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
-    permissions:
-      contents: write
-      packages: write
-
-    env:
-      BUILD_DIR: openwrt-src
-      DEBIAN_FRONTEND: noninteractive
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      MAKE_JOBS: 1
-      MAKEFLAGS: -j1
-
     steps:
-      # ============================================================================
-      # PREPARATION PHASE
-      # ============================================================================
-
-      - id: install-deps
-        name: Install build dependencies
-        run: |
-          echo "PATH=$PATH"
-          sudo /usr/bin/apt-get update
-          sudo /usr/bin/apt-get install -y \
-            build-essential curl file g++ git libncurses5-dev \
-            libncursesw5-dev libssl-dev python3 python3-pip \
-            python3-venv tar unzip zlib1g-dev
-
-      - id: checkout
-        name: Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - id: setup-cache
-        name: Setup ccache
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            clang-format \
+            curl \
+            file \
+            g++ \
+            gcc \
+            gettext \
+            git \
+            libncurses-dev \
+            libncurses5 \
+            libssl-dev \
+            python3 \
+            python3-distutils \
+            rsync \
+            subversion \
+            swig \
+            time \
+            unzip \
+            uuid-dev \
+            zlib1g-dev \
+            ccache
+
+      - name: Prepare ccache
+        run: |
+          mkdir -p ~/.cache/ccache
+          echo "max_size = 10G" > ~/.cache/ccache/ccache.conf
+          echo "compression = true" >> ~/.cache/ccache/ccache.conf
+
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.run_id }}
+          path: ~/.cache/ccache
+          key: openwrt-ccache-${{ runner.os }}-${{ hashFiles('**/build-openwrt.yml') }}
           restore-keys: |
-            ccache-${{ runner.os }}-
+            openwrt-ccache-${{ runner.os }}-
 
-      # ============================================================================
-      # SOURCE & FEEDS PHASE
-      # ============================================================================
-
-      - id: clone-source
-        name: Clone OpenWrt 25.12 source
+      - name: Clone OpenWrt ${{ env.OPENWRT_VERSION }}
         run: |
-          if [ -d "$BUILD_DIR" ]; then
-            echo "✓ Updating existing source..."
-            cd "$BUILD_DIR"
-            git fetch origin
-            git reset --hard origin/openwrt-25.12
-          else
-            echo "✓ Cloning fresh source..."
-            git clone \
-              --depth=1 \
-              --branch openwrt-25.12 \
-              https://github.com/openwrt/openwrt.git \
-              "$BUILD_DIR"
-          fi
+          git clone --depth=1 --branch=v${{ env.OPENWRT_VERSION }} ${{ env.OPENWRT_REPO }} openwrt
 
-      - id: cache-builds
-        name: Cache build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.BUILD_DIR }}/staging_dir
-            ${{ env.BUILD_DIR }}/build_dir/toolchain*
-          key: buildcache-${{ runner.os }}-${{ hashFiles('**/.config') }}
-          restore-keys: |
-            buildcache-${{ runner.os }}-
-
-      - id: update-feeds
-        name: Update and install feeds
+      - name: Copy preconfig
         run: |
-          cd "$BUILD_DIR"
+          cp configs/x86-legacy.config openwrt/.config
 
-          echo "✓ Configuring feeds..."
-          rm -f feeds.conf.default
-          cat > feeds.conf.default << 'EOF'
-          src-git packages https://github.com/openwrt/packages.git;openwrt-25.12
-          src-git luci https://github.com/openwrt/luci.git;openwrt-25.12
-          src-git routing https://github.com/openwrt/routing.git;openwrt-25.12
-          src-git telephony https://github.com/openwrt/telephony.git;openwrt-25.12
-          src-git helloworld https://github.com/fw876/helloworld.git;master
-          EOF
-
-          echo "✓ Updating feeds..."
-          timeout 300 ./scripts/feeds update -a
-
-          echo "✓ Installing feeds..."
-          ./scripts/feeds install -a
-
-      - id: patch-rust
-        name: Patch Rust package for CI compatibility
+      - name: Update feeds
         run: |
-          cd "$BUILD_DIR"
-          echo "✓ Patching Rust package to fix llvm.download-ci-llvm..."
-          
-          # Apply custom patches from repository
-          echo "✓ Copying repository patches..."
-          RUST_PATCH_DIR="feeds/packages/lang/rust/patches"
-          mkdir -p "$RUST_PATCH_DIR"
-          
-          # Copy our custom patches from the repository
-          if [ -d "../openwrt-patches/feeds/packages/lang/rust" ]; then
-            cp -v ../openwrt-patches/feeds/packages/lang/rust/*.patch "$RUST_PATCH_DIR/" 2>/dev/null || true
-            echo "✓ Custom patches copied"
-          fi
-          
-          # Find and patch all Rust patch files that might contain the incorrect setting
-          PATCHED=0
-          if [ -d "$RUST_PATCH_DIR" ]; then
-            echo "Searching in: $RUST_PATCH_DIR"
-            # Look for all patch files
-            while IFS= read -r PATCH_FILE; do
-              if [ -n "$PATCH_FILE" ]; then
-                # Check if this file contains the problematic setting
-                if grep -q "llvm.download-ci-llvm.*true" "$PATCH_FILE"; then
-                  echo "Found in patch file: $PATCH_FILE"
-                  # Replace various forms of true value with if-unchanged (without quotes for config.toml format)
-                  sed -i 's/llvm\.download-ci-llvm[[:space:]]*=[[:space:]]*true/llvm.download-ci-llvm = if-unchanged/g' "$PATCH_FILE"
-                  sed -i 's/download-ci-llvm[[:space:]]*=[[:space:]]*true/download-ci-llvm = if-unchanged/g' "$PATCH_FILE"
-                  PATCHED=$((PATCHED + 1))
-                  echo "✓ Patched $PATCH_FILE"
-                fi
-              fi
-            done < <(find "$RUST_PATCH_DIR" -name "*.patch" -type f)
-            
-            echo "Total patches modified: $PATCHED"
-          fi
+          cd openwrt
+          ./scripts/feeds update -a
 
-      - id: verify-rust-patch
-        name: Verify Rust patch before build
+      - name: Add helloworld feed
         run: |
-          cd "$BUILD_DIR"
-          echo "✓ Verifying Rust patch application..."
-          RUST_PATCH_DIR="feeds/packages/lang/rust/patches"
-          if [ -d "$RUST_PATCH_DIR" ]; then
-            echo "Contents of $RUST_PATCH_DIR:"
-            ls -la "$RUST_PATCH_DIR"
-            echo ""
-            echo "Searching for llvm.download-ci-llvm = true (should find nothing after patching):"
-            grep "llvm.download-ci-llvm = true" "$RUST_PATCH_DIR"/*.patch 2>/dev/null || echo "✓ No 'true' values found in patches!"
-            echo ""
-            echo "Searching for llvm.download-ci-llvm = if-unchanged (should find it):"
-            grep "llvm.download-ci-llvm.*if-unchanged" "$RUST_PATCH_DIR"/*.patch 2>/dev/null | head -5 || echo "⚠ Note: check if patch format is correct"
-          fi
+          cd openwrt
+          git clone --depth=1 https://github.com/fw876/helloworld.git feeds/helloworld
+          ./scripts/feeds update helloworld
+          ./scripts/feeds install -a -p helloworld
 
-      - id: patch-rust-config-direct
-        name: Directly patch Rust config files (fallback mechanism)
+      - name: Configure build
         run: |
-          cd "$BUILD_DIR"
-          echo "✓ Applying direct config patches as fallback..."
-          
-          # Find all potential Rust config files that will be extracted and patch them
-          # This runs after feeds are installed but before the actual make build
-          
-          # Create a sed script to patch any config files that might be extracted
-          CONFIG_PATCH_SCRIPT='
-            s/llvm\.download-ci-llvm[[:space:]]*=[[:space:]]*true/llvm.download-ci-llvm = if-unchanged/g
-            s/download-ci-llvm[[:space:]]*=[[:space:]]*true/download-ci-llvm = if-unchanged/g
-            s/llvm\.download-ci-llvm[[:space:]]*=[[:space:]]*"true"/llvm.download-ci-llvm = if-unchanged/g
-            s/download-ci-llvm[[:space:]]*=[[:space:]]*"true"/download-ci-llvm = if-unchanged/g
-          '
-          
-          # Look for config files in the feeds/packages/lang/rust directory
-          if [ -d "feeds/packages/lang/rust" ]; then
-            echo "Patching Rust package config files..."
-            find feeds/packages/lang/rust -name "config.toml*" -type f | while read -r config_file; do
-              if [ -f "$config_file" ]; then
-                echo "  Patching: $config_file"
-                sed -i "$CONFIG_PATCH_SCRIPT" "$config_file" || true
-              fi
-            done
-          fi
-          
-          echo "✓ Direct patching complete"
-
-      # ============================================================================
-      # CONFIGURATION PHASE
-      # ============================================================================
-
-      - id: configure-x86
-        name: Configure x86_64 build
-        run: |
-          cd "$BUILD_DIR"
-          echo "✓ Applying x86_64 specific settings..."
-          cat > .config << 'EOF'
-          CONFIG_TARGET_x86=y
-          CONFIG_TARGET_x86_64=y
-          CONFIG_TARGET_ROOTFS_EXT4FS=y
-          CONFIG_TARGET_ROOTFS_SQUASHFS=y
-          CONFIG_TARGET_ROOTFS_PARALLELSQUASHFS=y
-          CONFIG_GRUB_IMAGES=y
-          CONFIG_TARGET_IMAGES_GZIP=y
-          CONFIG_TARGET_ROOTFS_PARTSIZE=4096
-          CONFIG_TARGET_SWAP_PARTITIONSIZE=1024
-          CONFIG_HIGHMEM4G=y
-          CONFIG_HIGHMEM64G=n
-          CONFIG_X86_5LEVEL=y
-          CONFIG_NR_CPUS=8
-          CONFIG_SMP=y
-          CONFIG_HZ_1000=y
-          CONFIG_HZ=1000
-          CONFIG_CCACHE=y
-          CONFIG_KERNEL_CCACHE=y
-          CONFIG_PACKAGE_luci-app-ssr-plus=y
-          CONFIG_PACKAGE_dnsmasq-full=y
-          CONFIG_PACKAGE_iptables=y
-          CONFIG_PACKAGE_ipset=y
-          CONFIG_PACKAGE_kmod-ipt-nat=y
-          EOF
-
-          echo "✓ Finalizing configuration..."
+          cd openwrt
           make defconfig
 
-      - id: add-plugins
-        name: Add optional plugins
-        continue-on-error: true
+      - name: Build firmware
         run: |
-          cd "$BUILD_DIR"
+          cd openwrt
+          make -j${{ env.MAKE_JOBS }} || make -j1 V=s
 
-          echo "◆ Installing additional packages from feeds..."
-          ./scripts/feeds install -a -p luci-app-openvpn || true
-          ./scripts/feeds install -a -p luci-proto-wireguard || true
-          ./scripts/feeds install -a -p luci-app-ddns || true
-          ./scripts/feeds install -a -p ddns-scripts || true
-
-      - id: config-network
-        name: Configure network interfaces
+      - name: Prepare artifacts
         run: |
-          cd "$BUILD_DIR"
-          mkdir -p package/base-files/files/etc/config
+          cd openwrt
+          find bin/targets/x86/64 -name "*.img.gz" -type f | head -5
 
-          echo "✓ Creating network configuration..."
-          cat > package/base-files/files/etc/config/network << 'NETCFG'
-          config interface 'loopback'
-          	option device 'lo'
-          	option proto 'static'
-          	option ipaddr '127.0.0.1'
-          	option netmask '255.0.0.0'
-
-          config interface 'lan'
-          	option device 'eth0'
-          	option proto 'static'
-          	option ipaddr '192.168.10.251'
-          	option netmask '255.255.255.0'
-          	option gateway '192.168.10.1'
-          	option ip6assign '60'
-          NETCFG
-
-      - id: config-firewall
-        name: Create firewall UCI script
-        run: |
-          cd "$BUILD_DIR"
-          mkdir -p package/base-files/files/etc/uci-defaults
-
-          echo "✓ Creating firewall configuration script..."
-          cat > package/base-files/files/etc/uci-defaults/99-firewall-config << 'FWSCRIPT'
-          #!/bin/sh
-          uci -q batch << 'EOC'
-          set firewall.@zone[0]='zone'
-          set firewall.@zone[0].name='lan'
-          add_list firewall.@zone[0].network='lan'
-          set firewall.@zone[0].input='ACCEPT'
-          set firewall.@zone[0].output='ACCEPT'
-          set firewall.@zone[0].forward='ACCEPT'
-
-          add firewall zone
-          set firewall.@zone[1]='zone'
-          set firewall.@zone[1].name='wan'
-          add_list firewall.@zone[1].network='wan'
-          set firewall.@zone[1].input='REJECT'
-          set firewall.@zone[1].output='ACCEPT'
-          set firewall.@zone[1].forward='REJECT'
-          set firewall.@zone[1].masq='1'
-          set firewall.@zone[1].mtu_fix='1'
-
-          add firewall forwarding
-          set firewall.@forwarding[0]='forwarding'
-          set firewall.@forwarding[0].src='lan'
-          set firewall.@forwarding[0].dest='wan'
-
-          add firewall rule
-          set firewall.@rule[0]='rule'
-          set firewall.@rule[0].name='Allow-OpenVPN'
-          set firewall.@rule[0].src='wan'
-          set firewall.@rule[0].dest_port='1194'
-          set firewall.@rule[0].proto='udp'
-          set firewall.@rule[0].target='ACCEPT'
-
-          add firewall rule
-          set firewall.@rule[1]='rule'
-          set firewall.@rule[1].name='Allow-WireGuard'
-          set firewall.@rule[1].src='wan'
-          set firewall.@rule[1].dest_port='51820'
-          set firewall.@rule[1].proto='udp'
-          set firewall.@rule[1].target='ACCEPT'
-
-          commit firewall
-          EOC
-          exit 0
-          FWSCRIPT
-
-          chmod +x package/base-files/files/etc/uci-defaults/99-firewall-config
-
-      # ============================================================================
-      # BUILD PHASE
-      # ============================================================================
-
-      - id: build
-        name: Build firmware
-        env:
-          RUSTC_LLVM_DOWNLOAD: if-unchanged
-          RUST_BOOTSTRAP_CONFIG: |
-            llvm.download-ci-llvm = "if-unchanged"
-        run: |
-          cd "$BUILD_DIR"
-          
-          # Additional safeguard: patch any bootstrap config.toml if it exists
-          echo "✓ Setting up Rust bootstrap config safeguards..."
-          export CARGO_BUILD_JOBS=$((MAKE_JOBS))
-          
-          echo "Starting build with $MAKE_JOBS parallel job(s)..."
-          make -j$MAKE_JOBS V=s 2>&1 | tee build.log
-          BUILD_EXIT_CODE=${PIPESTATUS[0]}
-
-          echo ""
-          echo "========================================"
-          echo "Build exit code: $BUILD_EXIT_CODE"
-          echo "========================================"
-
-          # Check for actual firmware files
-          FIRM_FILES=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.img.gz" 2>/dev/null | wc -l)
-          echo "Firmware files found: $FIRM_FILES"
-
-          if [ "$BUILD_EXIT_CODE" -ne 0 ] || [ "$FIRM_FILES" -eq 0 ]; then
-            echo "❌ Build failed!"
-            echo ""
-            echo "Last 100 lines of build.log:"
-            tail -100 build.log
-            exit 1
-          fi
-          echo "✓ Build completed successfully"
-
-      # ============================================================================
-      # POST-BUILD PHASE
-      # ============================================================================
-
-      - id: summary
-        name: Generate build summary
-        if: success()
-        run: |
-          cd "$BUILD_DIR"
-
-          {
-            echo "=== OpenWrt x86 Build Summary ==="
-            echo "Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "GitHub Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo ""
-            echo "Build Status: ✓ SUCCESS"
-            echo ""
-
-            if [ -d "bin/targets/x86/64" ]; then
-              echo "Output Firmware:"
-              ls -lh bin/targets/x86/64/ | tail -n +2 | awk '{print "  " $9 " (" $5 ")"}'
-            fi
-            echo ""
-          } | tee build-summary.txt
-
-      - id: upload-firmware
-        name: Upload firmware artifacts
-        if: success()
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-x86-firmware
-          path: ${{ env.BUILD_DIR }}/bin/targets/x86/64/
-          retention-days: 30
-          if-no-files-found: warn
-
-      - id: upload-logs
-        name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs-${{ github.run_number }}
+          name: openwrt-x86-64-firmware-${{ github.run_number }}
           path: |
-            ${{ env.BUILD_DIR }}/build.log
-            ${{ env.BUILD_DIR }}/build-summary.txt
-            ${{ env.BUILD_DIR }}/logs/
-          retention-days: 15
-          if-no-files-found: ignore
+            openwrt/bin/targets/x86/64/**/*.img.gz
+            openwrt/bin/targets/x86/64/**/*.bin
+          retention-days: 14
+          if-no-files-found: error
 
-      - id: release
-        name: Create GitHub Release
-        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: ncipollo/release-action@v1
-        with:
-          tag: build-${{ github.run_number }}
-          name: OpenWrt x86 Build #${{ github.run_number }}
-          bodyFile: ${{ env.BUILD_DIR }}/build-summary.txt
-          draft: false
-          prerelease: false
-          artifacts: ${{ env.BUILD_DIR }}/bin/targets/x86/64/*.bin,${{ env.BUILD_DIR }}/bin/targets/x86/64/*.img.gz
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload ccache statistics
+        if: always()
+        run: |
+          ccache -s
