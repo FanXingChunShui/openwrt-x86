@@ -67,51 +67,40 @@ jobs:
           ./scripts/feeds update helloworld
           ./scripts/feeds install -a -p helloworld
 
-      - name: Prepare build config
+      - name: Configure with x86_64 default
         run: |
           cd openwrt
-          cat > .config << 'EOF'
-          CONFIG_TARGET_x86_64=y
-          CONFIG_TARGET_x86_64_generic=y
-          CONFIG_TARGET_x86_64_DEVICE_generic=y
-          EOF
-
-      - name: Build config tools and defconfig
-        run: |
-          cd openwrt
-          make scripts/config/conf
-          ./scripts/config/conf --defconfig=arch/Config.x86_64.config .config
           make defconfig
 
       - name: Create custom files for network config
         run: |
           mkdir -p openwrt/files/etc/config
           cat > openwrt/files/etc/config/network << 'EOF'
-          config interface 'loopback'
-            option device 'lo'
-            option proto 'static'
-            option ipaddr '127.0.0.1'
-            option netmask '255.0.0.0'
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
 
-          config device
-            option name 'br-lan'
-            option type 'bridge'
-            list ports 'eth0'
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'eth0'
 
-          config interface 'lan'
-            option device 'br-lan'
-            option proto 'static'
-            option ipaddr '192.168.10.251'
-            option netmask '255.255.255.0'
-            option gateway '192.168.10.1'
-            list dns '8.8.8.8'
-            list dns '114.114.114.114'
-          EOF
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.10.251'
+	option netmask '255.255.255.0'
+	option gateway '192.168.10.1'
+	list dns '8.8.8.8'
+	list dns '114.114.114.114'
+EOF
 
       - name: Build firmware
         run: |
           cd openwrt
-          make -j${{ env.MAKE_JOBS }} || make -j1 V=s
+          make -j${{ env.MAKE_JOBS }} V=s || make -j1 V=s
 
       - name: Prepare artifacts
         run: |
