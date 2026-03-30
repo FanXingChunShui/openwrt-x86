@@ -54,6 +54,11 @@ jobs:
         run: |
           git clone --depth=1 --branch=${{ env.OPENWRT_VERSION }} ${{ env.OPENWRT_REPO }} openwrt
 
+      - name: Update feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+
       - name: Add helloworld feed
         run: |
           cd openwrt
