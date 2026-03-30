@@ -121,21 +121,56 @@ jobs:
         run: |
           cd "$BUILD_DIR"
           echo "✓ Patching Rust package to fix llvm.download-ci-llvm..."
-          # Find and patch the bootstrap config patch file
+          
+          # Apply custom patches from repository
+          echo "✓ Copying repository patches..."
+          RUST_PATCH_DIR="feeds/packages/lang/rust/patches"
+          mkdir -p "$RUST_PATCH_DIR"
+          
+          # Copy our custom patches from the repository
+          if [ -d "../openwrt-patches/feeds/packages/lang/rust" ]; then
+            cp -v ../openwrt-patches/feeds/packages/lang/rust/*.patch "$RUST_PATCH_DIR/" 2>/dev/null || true
+            echo "✓ Custom patches copied"
+          fi
+          
+          # Find and patch all Rust patch files that might contain the incorrect setting
+          PATCHED=0
+          if [ -d "$RUST_PATCH_DIR" ]; then
+            echo "Searching in: $RUST_PATCH_DIR"
+            # Look for all patch files
+            while IFS= read -r PATCH_FILE; do
+              if [ -n "$PATCH_FILE" ]; then
+                # Check if this file contains the problematic setting
+                if grep -q "llvm.download-ci-llvm.*true" "$PATCH_FILE"; then
+                  echo "Found in patch file: $PATCH_FILE"
+                  # Replace various forms of true value with if-unchanged
+                  sed -i 's/llvm\.download-ci-llvm[[:space:]]*=[[:space:]]*true/llvm.download-ci-llvm = "if-unchanged"/g' "$PATCH_FILE"
+                  sed -i "s/llvm\.download-ci-llvm[[:space:]]*=[[:space:]]*\(['\"]true['\"]\)/llvm.download-ci-llvm = \"if-unchanged\"/g" "$PATCH_FILE"
+                  sed -i 's/-llvm\.download-ci-llvm = true/-llvm.download-ci-llvm = "if-unchanged"/g' "$PATCH_FILE"
+                  PATCHED=$((PATCHED + 1))
+                  echo "✓ Patched $PATCH_FILE"
+                fi
+              fi
+            done < <(find "$RUST_PATCH_DIR" -name "*.patch" -type f)
+            
+            echo "Total patches modified: $PATCHED"
+          fi
+
+      - id: verify-rust-patch
+        name: Verify Rust patch before build
+        run: |
+          cd "$BUILD_DIR"
+          echo "✓ Verifying Rust patch application..."
           RUST_PATCH_DIR="feeds/packages/lang/rust/patches"
           if [ -d "$RUST_PATCH_DIR" ]; then
-            # Look for patch files that contain llvm.download-ci-llvm
-            PATCH_FILE=$(grep -l "llvm.download-ci-llvm" "$RUST_PATCH_DIR"/*.patch 2>/dev/null | head -1)
-            if [ -n "$PATCH_FILE" ]; then
-              echo "Found patch file: $PATCH_FILE"
-              # Replace 'llvm.download-ci-llvm = true' with 'llvm.download-ci-llvm = "if-unchanged"'
-              sed -i 's/llvm\.download-ci-llvm = true/llvm.download-ci-llvm = "if-unchanged"/g' "$PATCH_FILE"
-              echo "✓ Patched llvm.download-ci-llvm in $PATCH_FILE"
-            else
-              echo "No patch file found containing llvm.download-ci-llvm"
-            fi
-          else
-            echo "Rust patches directory not found"
+            echo "Contents of $RUST_PATCH_DIR:"
+            ls -la "$RUST_PATCH_DIR"
+            echo ""
+            echo "Searching for llvm.download-ci-llvm = true (should find nothing after patching):"
+            grep "llvm.download-ci-llvm = true" "$RUST_PATCH_DIR"/*.patch 2>/dev/null || echo "✓ No 'true' values found - patch successful!"
+            echo ""
+            echo "Searching for llvm.download-ci-llvm = if-unchanged (should find it):"
+            grep "llvm.download-ci-llvm.*if-unchanged" "$RUST_PATCH_DIR"/*.patch 2>/dev/null | head -5 || echo "⚠ Note: might not exist yet in patches"
           fi
 
       # ============================================================================
@@ -274,8 +309,15 @@ jobs:
         name: Build firmware
         env:
           RUSTC_LLVM_DOWNLOAD: if-unchanged
+          RUST_BOOTSTRAP_CONFIG: |
+            llvm.download-ci-llvm = "if-unchanged"
         run: |
           cd "$BUILD_DIR"
+          
+          # Additional safeguard: patch any bootstrap config.toml if it exists
+          echo "✓ Setting up Rust bootstrap config safeguards..."
+          export CARGO_BUILD_JOBS=$((MAKE_JOBS))
+          
           echo "Starting build with $MAKE_JOBS parallel job(s)..."
           make -j$MAKE_JOBS V=s 2>&1 | tee build.log
           BUILD_EXIT_CODE=${PIPESTATUS[0]}

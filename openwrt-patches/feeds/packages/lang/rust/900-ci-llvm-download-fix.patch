@@ -1,0 +1,15 @@
+--- a/config.toml.in
++++ b/config.toml.in
+@@ -1,10 +1,10 @@
+ # This is a configuration file intended for use on build systems
+ 
+-llvm.download-ci-llvm = true
++llvm.download-ci-llvm = "if-unchanged"
+ 
+ [llvm]
+-download-ci-llvm = true
++download-ci-llvm = "if-unchanged"
+ 
+ [build]
+ # Configure how build system will be built
+
