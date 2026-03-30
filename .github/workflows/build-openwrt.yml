@@ -71,10 +71,10 @@ jobs:
         run: |
           cd openwrt
           cat > .config << 'EOF'
-CONFIG_TARGET_x86_64=y
-CONFIG_TARGET_x86_64_generic=y
-CONFIG_TARGET_x86_64_DEVICE_generic=y
-EOF
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_x86_64_generic=y
+          CONFIG_TARGET_x86_64_DEVICE_generic=y
+          EOF
 
       - name: Build config tools and defconfig
         run: |
@@ -87,26 +87,26 @@ EOF
         run: |
           mkdir -p openwrt/files/etc/config
           cat > openwrt/files/etc/config/network << 'EOF'
-config interface 'loopback'
-	option device 'lo'
-	option proto 'static'
-	option ipaddr '127.0.0.1'
-	option netmask '255.0.0.0'
+          config interface 'loopback'
+            option device 'lo'
+            option proto 'static'
+            option ipaddr '127.0.0.1'
+            option netmask '255.0.0.0'
 
-config device
-	option name 'br-lan'
-	option type 'bridge'
-	list ports 'eth0'
+          config device
+            option name 'br-lan'
+            option type 'bridge'
+            list ports 'eth0'
 
-config interface 'lan'
-	option device 'br-lan'
-	option proto 'static'
-	option ipaddr '192.168.10.251'
-	option netmask '255.255.255.0'
-	option gateway '192.168.10.1'
-	list dns '8.8.8.8'
-	list dns '114.114.114.114'
-EOF
+          config interface 'lan'
+            option device 'br-lan'
+            option proto 'static'
+            option ipaddr '192.168.10.251'
+            option netmask '255.255.255.0'
+            option gateway '192.168.10.1'
+            list dns '8.8.8.8'
+            list dns '114.114.114.114'
+          EOF
 
       - name: Build firmware
         run: |
