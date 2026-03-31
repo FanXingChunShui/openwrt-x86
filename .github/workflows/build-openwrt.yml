@@ -65,9 +65,18 @@ jobs:
           ./scripts/feeds update helloworld
           ./scripts/feeds install -a -p helloworld
 
+      - name: Install ddns and openvpn packages
+        run: |
+          cd openwrt
+          ./scripts/feeds install luci-app-ddns ddns-scripts openvpn luci-app-openvpn
+
       - name: Configure build
         run: |
           cd openwrt
+          cat > .config << 'EOF'
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_generic=y
+          EOF
           make defconfig
 
       - name: Create custom files for network config
@@ -103,15 +112,15 @@ jobs:
       - name: Prepare artifacts
         run: |
           cd openwrt
-          find bin/targets/x86/64 -name "*.img.gz" -type f | head -5
+          find bin/targets/x86 -name "*.img.gz" -type f | head -5
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-x86-64-firmware-${{ github.run_number }}
           path: |
-            openwrt/bin/targets/x86/64/**/*.img.gz
-            openwrt/bin/targets/x86/64/**/*.bin
+            openwrt/bin/targets/x86/**/*.img.gz
+            openwrt/bin/targets/x86/**/*.bin
           retention-days: 14
           if-no-files-found: error
 
