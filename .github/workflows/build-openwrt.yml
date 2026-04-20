@@ -125,7 +125,7 @@ jobs:
           EOF
           make defconfig
 
-      - name: Create custom files for network config (IPv6 + LAN: 192.168.10.251)
+      - name: Create custom files for network config (IPv6 plus LAN 192.168.10.251)
         run: |
           mkdir -p openwrt/files/etc/config
           cat > openwrt/files/etc/config/network << 'EOF'
