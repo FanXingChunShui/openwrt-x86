@@ -58,10 +58,8 @@ jobs:
       - name: Add Passwall2 feed
         run: |
           cd openwrt-build
-          # Add passwall2 feed
+          # Add passwall2 feed (luci is already in OpenWrt's default feeds)
           echo "src-git passwall2 https://github.com/Openwrt-Passwall/openwrt-passwall2" >> feeds.conf.default
-          # Add extra feeds for dependencies
-          echo "src-git luci https://github.com/openwrt/luci.git" >> feeds.conf.default
 
       - name: Update feeds
         run: |
